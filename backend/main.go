@@ -1,11 +1,15 @@
 package main
 
 import (
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -53,6 +57,22 @@ func InternalServerError(w http.ResponseWriter, message string) {
 		"error":   true,
 		"message": message,
 	})
+}
+
+// Function to get file extension
+func getFileExtension(filename string) string {
+	ext := filepath.Ext(filename)
+	if ext == "" {
+		return ".bin" // Default extension if none found
+	}
+	return ext
+}
+
+// Function to generate MD5 hash from string
+func generateMD5Hash(input string) string {
+	hash := md5.New()
+	hash.Write([]byte(input))
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func connectToDatabase() (*pg.DB, error) {
@@ -110,10 +130,70 @@ func setupRoutes(r *chi.Mux, db *pg.DB, logger *slog.Logger, validate *validator
 		w.Write([]byte("Hello, World!"))
 	})
 
-	r.Route("/api/events", func(r chi.Router) {
-		r.Get("/", GetEventsHandler(db, logger))
-		r.Post("/", CreateEventHandler(db, logger, validate))
+	r.Route("/api", func(r chi.Router) {
+		r.Route("/events", func(r chi.Router) {
+			r.Get("/", GetEventsHandler(db, logger))
+			r.Post("/", CreateEventHandler(db, logger, validate))
+		})
+
+		r.Route("/promotions", func(r chi.Router) {
+			r.Post("/", func(w http.ResponseWriter, r *http.Request) {
+				// Parse the multipart form (maximum upload size 10MB)
+				err := r.ParseMultipartForm(10 << 20) // 10 MB
+				if err != nil {
+					BadRequest(w, err.Error())
+					return
+				}
+
+				file, fileHeader, err := r.FormFile("file")
+				if err != nil {
+					BadRequest(w, err.Error())
+					return
+				}
+				defer file.Close()
+
+				// Ensure the uploads directory exists
+				destDir := "./uploads"
+				if _, err := os.Stat(destDir); os.IsNotExist(err) {
+					err := os.MkdirAll(destDir, 0755) // Create the directory if it doesn't exist
+					if err != nil {
+						InternalServerError(w, err.Error())
+						return
+					}
+				}
+
+				// Get the file extension
+				ext := getFileExtension(fileHeader.Filename)
+
+				// Concatenate the current date and original filename to create a unique string
+				dateStr := time.Now().Format("20060102_150405") // Example: "20231128_102030"
+				uniqueString := dateStr + "_" + fileHeader.Filename
+
+				// Generate the MD5 hash of the unique string
+				hashFilename := generateMD5Hash(uniqueString)
+
+				// Create the destination file with the MD5 hash as the name and original extension
+				destPath := filepath.Join(destDir, hashFilename+ext)
+				outFile, err := os.Create(destPath)
+				if err != nil {
+					InternalServerError(w, err.Error())
+					return
+				}
+				defer outFile.Close()
+
+				// Copy the uploaded file to the destination
+				_, err = io.Copy(outFile, file)
+				if err != nil {
+					InternalServerError(w, err.Error())
+					return
+				}
+
+				fmt.Fprintf(w, "File uploaded successfully: %s", destPath)
+			})
+		})
+
 	})
+
 }
 
 func main() {
@@ -136,6 +216,8 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(slogchi.New(logger))
 	r.Use(middleware.Recoverer)
+	// Serve static file
+	r.Get("/uploads/*", http.StripPrefix("/uploads", http.FileServer(http.Dir("./uploads"))).ServeHTTP)
 
 	// Setup routes
 	validate := validator.New()
@@ -147,4 +229,5 @@ func main() {
 	if err := http.ListenAndServe(":"+port, r); err != nil {
 		logger.Error("Server failed to start", slog.String("error", err.Error()))
 	}
+
 }
