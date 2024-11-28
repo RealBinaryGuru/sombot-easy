@@ -20,6 +20,7 @@ import (
 	slogchi "github.com/samber/slog-chi"
 )
 
+// Events
 type Event struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
@@ -28,6 +29,18 @@ type Event struct {
 
 type RequestEventBody struct {
 	Name string `json:"name" validate:"required,min=2,max=50"`
+}
+
+// Promotions
+type Promotion struct {
+	PromotionID   int       `json:"promotion_id"`
+	PromotionName string    `json:"promotion_name"`
+	ImageURL      string    `json:"image_url"`
+	StartDate     time.Time `json:"start_date"`
+	EndDate       time.Time `json:"end_date"`
+	Status        string    `json:"status"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // Response Helpers
@@ -172,9 +185,18 @@ func setupRoutes(r *chi.Mux, db *pg.DB, logger *slog.Logger, validate *validator
 				// Generate the MD5 hash of the unique string
 				hashFilename := generateMD5Hash(uniqueString)
 
-				// Create the destination file with the MD5 hash as the name and original extension
-				destPath := filepath.Join(destDir, hashFilename+ext)
-				outFile, err := os.Create(destPath)
+				promotionsDir := filepath.Join(destDir, "promotions")
+
+				// Ensure that the "promotions" directory exists
+				if err := os.MkdirAll(promotionsDir, os.ModePerm); err != nil {
+					InternalServerError(w, err.Error())
+					return
+				}
+
+				// Join the "promotions" directory with the filename
+				promotionFilePath := filepath.Join(promotionsDir, hashFilename+ext)
+
+				outFile, err := os.Create(promotionFilePath)
 				if err != nil {
 					InternalServerError(w, err.Error())
 					return
@@ -188,7 +210,22 @@ func setupRoutes(r *chi.Mux, db *pg.DB, logger *slog.Logger, validate *validator
 					return
 				}
 
-				fmt.Fprintf(w, "File uploaded successfully: %s", destPath)
+				promotion := &Promotion{
+					PromotionName: fileHeader.Filename,
+					ImageURL:      promotionFilePath,
+					StartDate:     time.Now(),
+					EndDate:       time.Now().AddDate(0, 1, 0),
+					Status:        "active",
+					CreatedAt:     time.Now(),
+					UpdatedAt:     time.Now(),
+				}
+
+				if _, err := db.Model(promotion).Insert(); err != nil {
+					InternalServerError(w, "Failed to create promotion")
+					return
+				}
+
+				SuccessResponse(w, promotion)
 			})
 		})
 
