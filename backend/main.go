@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-pg/pg/v10"
+	"github.com/go-playground/validator/v10"
 	"github.com/joho/godotenv"
 
 	slogchi "github.com/samber/slog-chi"
@@ -21,42 +22,36 @@ type Event struct {
 	Date string `json:"date"`
 }
 
+type RequestEventBody struct {
+	Name string `json:"name" validate:"required,min=2,max=50"`
+}
+
+// Response Helpers
+func respondJSON(w http.ResponseWriter, status int, data map[string]interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(data)
+}
+
 func SuccessResponse(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"error":   false,
 		"message": "success",
 		"data":    data,
 	})
 }
 
-func SuccessPaginationResponse(w http.ResponseWriter, data interface{}, page, size, total int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"message": "success",
-		"data":    data,
-		"page":    page,
-		"size":    size,
-		"total":   total,
+func BadRequest(w http.ResponseWriter, message string) {
+	respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"error":   true,
+		"message": message,
 	})
 }
 
-func BadRequest(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadRequest)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"message": "data validation failed",
-		"data":    data,
-	})
-}
-
-func InternalServerError(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusInternalServerError)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"message": "internal server error",
-		"data":    data,
+func InternalServerError(w http.ResponseWriter, message string) {
+	respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+		"error":   true,
+		"message": message,
 	})
 }
 
@@ -68,25 +63,68 @@ func connectToDatabase() (*pg.DB, error) {
 		Database: os.Getenv("DB_NAME"),
 	})
 
-	_, err := db.Exec("SELECT 1")
-	if err != nil {
+	if _, err := db.Exec("SELECT 1"); err != nil {
 		return nil, err
 	}
 
 	return db, nil
 }
 
+func GetEventsHandler(db *pg.DB, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var events []Event
+		if err := db.Model(&events).Select(); err != nil {
+			logger.Error("Error fetching events", slog.String("error", err.Error()))
+			InternalServerError(w, "Error fetching events")
+			return
+		}
+		SuccessResponse(w, events)
+	}
+}
+
+func CreateEventHandler(db *pg.DB, logger *slog.Logger, validate *validator.Validate) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var requestData RequestEventBody
+
+		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+			BadRequest(w, "Invalid JSON payload")
+			return
+		}
+		if err := validate.Struct(requestData); err != nil {
+			BadRequest(w, "Validation error: "+err.Error())
+			return
+		}
+
+		event := &Event{Name: requestData.Name}
+		if _, err := db.Model(event).Insert(); err != nil {
+			logger.Error("Error inserting event", slog.String("error", err.Error()))
+			InternalServerError(w, "Failed to create event")
+			return
+		}
+		SuccessResponse(w, event)
+	}
+}
+
+func setupRoutes(r *chi.Mux, db *pg.DB, logger *slog.Logger, validate *validator.Validate) {
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Hello, World!"))
+	})
+
+	r.Route("/api/events", func(r chi.Router) {
+		r.Get("/", GetEventsHandler(db, logger))
+		r.Post("/", CreateEventHandler(db, logger, validate))
+	})
+}
+
 func main() {
+	if err := godotenv.Load(); err != nil {
+		fmt.Println("Error loading .env file:", err)
+	}
+
 	// Initialize logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	// Load environment variables from .env file
-	err := godotenv.Load()
-	if err != nil {
-		logger.Error("Error loading .env", slog.String("error", err.Error()))
-	}
-
-	// Connect to database
+	// Connect to the database
 	db, err := connectToDatabase()
 	if err != nil {
 		logger.Error("Error connecting to database", slog.String("error", err.Error()))
@@ -94,35 +132,18 @@ func main() {
 	}
 	defer db.Close()
 
+	// Initialize router and middlewares
 	r := chi.NewRouter()
 	r.Use(slogchi.New(logger))
 	r.Use(middleware.Recoverer)
 
-	r.Route("/api", func(r chi.Router) {
-		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("Hello, World!"))
-		})
-
-		// Events endpoint
-		r.Route("/events", func(r chi.Router) {
-			r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-				var events []Event
-				err := db.Model(&events).Select()
-				if err != nil {
-					logger.Error("Error fetching events", slog.String("error", err.Error()))
-					InternalServerError(w, err.Error())
-					return
-				}
-
-				SuccessResponse(w, events)
-			})
-		})
-	})
+	// Setup routes
+	validate := validator.New()
+	setupRoutes(r, db, logger, validate)
 
 	// Start the server
 	port := os.Getenv("SERVER_PORT")
 	logger.Info("Starting server", slog.String("port", port))
-
 	if err := http.ListenAndServe(":"+port, r); err != nil {
 		logger.Error("Server failed to start", slog.String("error", err.Error()))
 	}
