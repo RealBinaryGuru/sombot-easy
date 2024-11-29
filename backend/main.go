@@ -14,24 +14,16 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-pg/pg/v10"
-	"github.com/go-playground/validator/v10"
 	"github.com/joho/godotenv"
-
 	slogchi "github.com/samber/slog-chi"
 )
 
-// Events
-type Event struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-	Date string `json:"date"`
-}
+// Constants
+const uploadDir = "./uploads"
 
-type RequestEventBody struct {
-	Name string `json:"name" validate:"required,min=2,max=50"`
-}
+var promotionDir = filepath.Join(uploadDir, "promotions")
 
-// Promotions
+// Models
 type Promotion struct {
 	PromotionID   int       `json:"promotion_id"`
 	PromotionName string    `json:"promotion_name"`
@@ -44,13 +36,13 @@ type Promotion struct {
 }
 
 // Response Helpers
-func respondJSON(w http.ResponseWriter, status int, data map[string]interface{}) {
+func respondJSON(w http.ResponseWriter, status int, response map[string]interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
-func SuccessResponse(w http.ResponseWriter, data interface{}) {
+func successResponse(w http.ResponseWriter, data interface{}) {
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"error":   false,
 		"message": "success",
@@ -58,36 +50,29 @@ func SuccessResponse(w http.ResponseWriter, data interface{}) {
 	})
 }
 
-func BadRequest(w http.ResponseWriter, message string) {
-	respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+func errorResponse(w http.ResponseWriter, status int, message string) {
+	respondJSON(w, status, map[string]interface{}{
 		"error":   true,
 		"message": message,
 	})
 }
 
-func InternalServerError(w http.ResponseWriter, message string) {
-	respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
-		"error":   true,
-		"message": message,
-	})
-}
-
-// Function to get file extension
-func getFileExtension(filename string) string {
-	ext := filepath.Ext(filename)
-	if ext == "" {
-		return ".bin" // Default extension if none found
+// Utility Functions
+func ensureDirectoryExists(dir string) error {
+	dir = filepath.Clean(dir)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return os.MkdirAll(dir, 0755)
 	}
-	return ext
+	return nil
 }
 
-// Function to generate MD5 hash from string
 func generateMD5Hash(input string) string {
 	hash := md5.New()
-	hash.Write([]byte(input))
+	_, _ = hash.Write([]byte(input))
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
+// Database Connection
 func connectToDatabase() (*pg.DB, error) {
 	db := pg.Connect(&pg.Options{
 		Addr:     fmt.Sprintf("%s:%s", os.Getenv("DB_HOST"), os.Getenv("DB_PORT")),
@@ -95,142 +80,89 @@ func connectToDatabase() (*pg.DB, error) {
 		Password: os.Getenv("DB_PASSWORD"),
 		Database: os.Getenv("DB_NAME"),
 	})
-
 	if _, err := db.Exec("SELECT 1"); err != nil {
 		return nil, err
 	}
-
 	return db, nil
 }
 
-func GetEventsHandler(db *pg.DB, logger *slog.Logger) http.HandlerFunc {
+// Promotion Handlers
+func createPromotionHandler(db *pg.DB, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var events []Event
-		if err := db.Model(&events).Select(); err != nil {
-			logger.Error("Error fetching events", slog.String("error", err.Error()))
-			InternalServerError(w, "Error fetching events")
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			errorResponse(w, http.StatusBadRequest, "Invalid form data: "+err.Error())
 			return
 		}
-		SuccessResponse(w, events)
+
+		file, fileHeader, err := r.FormFile("file")
+		if err != nil {
+			errorResponse(w, http.StatusBadRequest, "Failed to retrieve file: "+err.Error())
+			return
+		}
+		defer file.Close()
+
+		if err := ensureDirectoryExists(promotionDir); err != nil {
+			errorResponse(w, http.StatusInternalServerError, "Failed to create directory: "+err.Error())
+			return
+		}
+
+		ext := filepath.Ext(fileHeader.Filename)
+		hashFilename := generateMD5Hash(time.Now().String() + fileHeader.Filename)
+		filePath := filepath.Join(promotionDir, hashFilename+ext)
+
+		outFile, err := os.Create(filepath.Clean(filePath))
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, "Failed to save file: "+err.Error())
+			return
+		}
+		defer outFile.Close()
+
+		if _, err := io.Copy(outFile, file); err != nil {
+			errorResponse(w, http.StatusInternalServerError, "Failed to write file: "+err.Error())
+			return
+		}
+
+		promotion := &Promotion{
+			PromotionName: fileHeader.Filename,
+			ImageURL:      "/uploads/promotions/" + hashFilename + ext,
+			StartDate:     time.Now(),
+			EndDate:       time.Now().AddDate(0, 1, 0),
+			Status:        "active",
+			CreatedAt:     time.Now(),
+			UpdatedAt:     time.Now(),
+		}
+
+		if _, err := db.Model(promotion).Insert(); err != nil {
+			errorResponse(w, http.StatusInternalServerError, "Failed to create promotion: "+err.Error())
+			return
+		}
+
+		successResponse(w, promotion)
 	}
 }
 
-func CreateEventHandler(db *pg.DB, logger *slog.Logger, validate *validator.Validate) http.HandlerFunc {
+func getPromotionsHandler(db *pg.DB, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var requestData RequestEventBody
-
-		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
-			BadRequest(w, "Invalid JSON payload")
+		var promotions []Promotion
+		if err := db.Model(&promotions).Select(); err != nil {
+			logger.Error("Error fetching promotions", slog.String("error", err.Error()))
+			errorResponse(w, http.StatusInternalServerError, "Error fetching promotions")
 			return
 		}
-		if err := validate.Struct(requestData); err != nil {
-			BadRequest(w, "Validation error: "+err.Error())
-			return
-		}
-
-		event := &Event{Name: requestData.Name}
-		if _, err := db.Model(event).Insert(); err != nil {
-			logger.Error("Error inserting event", slog.String("error", err.Error()))
-			InternalServerError(w, "Failed to create event")
-			return
-		}
-		SuccessResponse(w, event)
+		successResponse(w, promotions)
 	}
 }
 
-func setupRoutes(r *chi.Mux, db *pg.DB, logger *slog.Logger, validate *validator.Validate) {
+// Setup Routes
+func setupRoutes(r *chi.Mux, db *pg.DB, logger *slog.Logger) {
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Hello, World!"))
 	})
-
-	r.Route("/api", func(r chi.Router) {
-		r.Route("/events", func(r chi.Router) {
-			r.Get("/", GetEventsHandler(db, logger))
-			r.Post("/", CreateEventHandler(db, logger, validate))
-		})
-
-		r.Route("/promotions", func(r chi.Router) {
-			r.Post("/", func(w http.ResponseWriter, r *http.Request) {
-				// Parse the multipart form (maximum upload size 10MB)
-				err := r.ParseMultipartForm(10 << 20) // 10 MB
-				if err != nil {
-					BadRequest(w, err.Error())
-					return
-				}
-
-				file, fileHeader, err := r.FormFile("file")
-				if err != nil {
-					BadRequest(w, err.Error())
-					return
-				}
-				defer file.Close()
-
-				// Ensure the uploads directory exists
-				destDir := "./uploads"
-				if _, err := os.Stat(destDir); os.IsNotExist(err) {
-					err := os.MkdirAll(destDir, 0755) // Create the directory if it doesn't exist
-					if err != nil {
-						InternalServerError(w, err.Error())
-						return
-					}
-				}
-
-				// Get the file extension
-				ext := getFileExtension(fileHeader.Filename)
-
-				// Concatenate the current date and original filename to create a unique string
-				dateStr := time.Now().Format("20060102_150405") // Example: "20231128_102030"
-				uniqueString := dateStr + "_" + fileHeader.Filename
-
-				// Generate the MD5 hash of the unique string
-				hashFilename := generateMD5Hash(uniqueString)
-
-				promotionsDir := filepath.Join(destDir, "promotions")
-
-				// Ensure that the "promotions" directory exists
-				if err := os.MkdirAll(promotionsDir, os.ModePerm); err != nil {
-					InternalServerError(w, err.Error())
-					return
-				}
-
-				// Join the "promotions" directory with the filename
-				promotionFilePath := filepath.Join(promotionsDir, hashFilename+ext)
-
-				outFile, err := os.Create(promotionFilePath)
-				if err != nil {
-					InternalServerError(w, err.Error())
-					return
-				}
-				defer outFile.Close()
-
-				// Copy the uploaded file to the destination
-				_, err = io.Copy(outFile, file)
-				if err != nil {
-					InternalServerError(w, err.Error())
-					return
-				}
-
-				promotion := &Promotion{
-					PromotionName: fileHeader.Filename,
-					ImageURL:      promotionFilePath,
-					StartDate:     time.Now(),
-					EndDate:       time.Now().AddDate(0, 1, 0),
-					Status:        "active",
-					CreatedAt:     time.Now(),
-					UpdatedAt:     time.Now(),
-				}
-
-				if _, err := db.Model(promotion).Insert(); err != nil {
-					InternalServerError(w, "Failed to create promotion")
-					return
-				}
-
-				SuccessResponse(w, promotion)
-			})
-		})
-
+	r.Route("/api/promotions", func(r chi.Router) {
+		r.Post("/", createPromotionHandler(db, logger))
+		r.Get("/", getPromotionsHandler(db, logger))
 	})
-
+	r.Get("/uploads/*", http.StripPrefix("/uploads", http.FileServer(http.Dir("./uploads"))).ServeHTTP)
 }
 
 func main() {
@@ -238,10 +170,8 @@ func main() {
 		fmt.Println("Error loading .env file:", err)
 	}
 
-	// Initialize logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	// Connect to the database
 	db, err := connectToDatabase()
 	if err != nil {
 		logger.Error("Error connecting to database", slog.String("error", err.Error()))
@@ -249,22 +179,23 @@ func main() {
 	}
 	defer db.Close()
 
-	// Initialize router and middlewares
 	r := chi.NewRouter()
 	r.Use(slogchi.New(logger))
 	r.Use(middleware.Recoverer)
-	// Serve static file
-	r.Get("/uploads/*", http.StripPrefix("/uploads", http.FileServer(http.Dir("./uploads"))).ServeHTTP)
 
-	// Setup routes
-	validate := validator.New()
-	setupRoutes(r, db, logger, validate)
+	if err := ensureDirectoryExists(promotionDir); err != nil {
+		logger.Error("Failed to initialize uploads directory", slog.String("error", err.Error()))
+		return
+	}
 
-	// Start the server
+	setupRoutes(r, db, logger)
+
 	port := os.Getenv("SERVER_PORT")
+	if port == "" {
+		port = "3000"
+	}
 	logger.Info("Starting server", slog.String("port", port))
 	if err := http.ListenAndServe(":"+port, r); err != nil {
 		logger.Error("Server failed to start", slog.String("error", err.Error()))
 	}
-
 }
