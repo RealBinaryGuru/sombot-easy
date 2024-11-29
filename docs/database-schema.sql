@@ -10,7 +10,7 @@ CREATE TABLE promotions (
     status promotion_status DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) PARTITION BY RANGE (start_date);
+);
 
 CREATE INDEX idx_promotion_start_date ON promotions (start_date);
 CREATE INDEX idx_promotion_end_date ON promotions (end_date);
