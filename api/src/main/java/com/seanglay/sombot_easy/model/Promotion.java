@@ -1,6 +1,9 @@
 package com.seanglay.sombot_easy.model;
 
 import jakarta.persistence.*;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+
 import java.time.LocalDateTime;
 
 @Entity
@@ -12,9 +15,13 @@ public class Promotion {
     @Column(name = "promotion_id")
     private Long promotionId;
 
+    @NotNull(message = "Promotion name cannot be null")
+    @Size(min = 3, max = 255, message = "Promotion name must be between 3 and 255 characters")
     @Column(name = "promotion_name", nullable = false)
     private String promotionName;
 
+    @NotNull(message = "Image URL cannot be null")
+    @Size(min = 5, max = 500, message = "Image URL must be between 5 and 500 characters")
     @Column(name = "image_url", nullable = false)
     private String imageUrl;
 
@@ -53,8 +60,7 @@ public class Promotion {
         ACTIVE, INACTIVE, EXPIRED
     }
 
-    // Getter and Setter methods
-
+    // Getters and Setters (same as before)
     public Long getPromotionId() {
         return promotionId;
     }
