@@ -3,7 +3,6 @@ package com.seanglay.sombot_easy.controller;
 import com.seanglay.sombot_easy.dto.APIResponse;
 import com.seanglay.sombot_easy.dto.LoginDTO;
 import com.seanglay.sombot_easy.dto.RegisterDTO;
-import com.seanglay.sombot_easy.model.User;
 import com.seanglay.sombot_easy.service.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -20,15 +19,12 @@ public class Authentication extends BaseController {
     private UserService userService;
 
     @PostMapping("/register")
-    public ResponseEntity<APIResponse<User>> register(@RequestBody RegisterDTO registerDTO) {
-        User registeredUser = userService.register(registerDTO);
-
-        return ok(registeredUser);
+    public ResponseEntity<APIResponse<String>> register(@RequestBody RegisterDTO registerDTO) {
+        return ok(userService.register(registerDTO));
     }
 
     @PostMapping("/login")
-    public ResponseEntity<APIResponse<User>> login(@RequestBody LoginDTO loginDTO) {
-        User loginUser = userService.login(loginDTO);
-        return ok(loginUser);
+    public ResponseEntity<APIResponse<String>> login(@RequestBody LoginDTO loginDTO) {
+        return ok(userService.login(loginDTO));
     }
 }

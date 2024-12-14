@@ -5,6 +5,7 @@ import com.seanglay.sombot_easy.dto.RegisterDTO;
 import com.seanglay.sombot_easy.mapper.UserMapper;
 import com.seanglay.sombot_easy.model.User;
 import com.seanglay.sombot_easy.repository.UserRepository;
+import com.seanglay.sombot_easy.util.JWTToken;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -16,12 +17,17 @@ public class UserService {
     @Autowired
     private UserMapper userMapper;
 
-    public User register(RegisterDTO registerDTO) {
+    @Autowired
+    private JWTToken jwtToken;
+
+    public String register(RegisterDTO registerDTO) {
         User user = userMapper.registerDtoToUser(registerDTO);
-        return userRepository.save(user);
+         userRepository.save(user);
+         return jwtToken.generateToken(user);
     }
 
-    public User login(LoginDTO loginDTO) {
-        return userRepository.findByEmail(loginDTO.getEmail()).orElseThrow(() -> new RuntimeException("Invalid credentials"));
+    public String login(LoginDTO loginDTO) {
+        User user = userRepository.findByEmail(loginDTO.getEmail()).orElseThrow(() -> new RuntimeException("Invalid credentials"));
+        return jwtToken.generateToken(user);
     }
 }
