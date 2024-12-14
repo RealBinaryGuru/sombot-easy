@@ -1,6 +1,7 @@
 package com.seanglay.sombot_easy.controller;
 
 import com.seanglay.sombot_easy.dto.APIResponse;
+import com.seanglay.sombot_easy.dto.LoginDTO;
 import com.seanglay.sombot_easy.dto.RegisterDTO;
 import com.seanglay.sombot_easy.model.User;
 import com.seanglay.sombot_easy.service.UserService;
@@ -23,5 +24,11 @@ public class Authentication extends BaseController {
         User registeredUser = userService.register(registerDTO);
 
         return ok(registeredUser);
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<APIResponse<User>> login(@RequestBody LoginDTO loginDTO) {
+        User loginUser = userService.login(loginDTO);
+        return ok(loginUser);
     }
 }

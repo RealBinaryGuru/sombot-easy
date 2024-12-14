@@ -1,5 +1,8 @@
 package com.seanglay.sombot_easy.exception;
 
+import lombok.Getter;
+
+@Getter
 public abstract class ApplicationAbstractException extends Exception {
 
     private final int statusCode;
@@ -15,11 +18,4 @@ public abstract class ApplicationAbstractException extends Exception {
         this.errorCode = errorCode;
     }
 
-    public int getStatusCode() {
-        return statusCode;
-    }
-
-    public String getErrorCode() {
-        return errorCode;
-    }
 }
